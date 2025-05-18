@@ -29,3 +29,5 @@ Nesse projeto, é possível realizar a mudança do tipo de resistor que está se
 - Valor medido em tempo real;
 - Valor comercial mais próximo;
 - Cor de cada uma das faixas que compõe o resistor.
+## Conexão Feita Para Realizar Leitura
+Abaixo segue uma imagem que mostra a conexão feita para realizar a leitura da resistência do resistor desconhecido.
