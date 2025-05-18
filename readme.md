@@ -10,6 +10,7 @@ Para realizar a leitura da resistência, deve ser conectado um resistor de valor
 ![alt text](docs/image-02.png)
 
 Para acessar a página WEB é necessário saber o endereço IP do Raspberry Pi. Para isso, abra o terminal serial e carregue o arquivo .uf2 para o seu dispositivo. Ao fazer isso, durante a inicialização será exibido no terminal o endereço IP. Escreva o endereço em qualquer navegador e você conseguirá acessar a página. Lembre-se de verificar se está conectado na mesma rede que o Raspberry.
+![exibbição do IP utilizado para entrar na página WEB](image.png)
 
 ## Calibração para a Medição (Interpolação polinomial)
 Como queremos abranger medições de 100 ohms até 100k ohms, faremos medições para vários resistores ao longo da faixa especificada. Nesse caso, fizemos 5 medições. Em cada medição foi anotado um par de valores: o valor medido pelo adc e o valor real do resistor. A partir desses valores e, por meio da utilzação do MatLab, foi traçada uma curva que passasse pelos pontos obtidos e dessa curva, foram extraídos os coeficientes da equação que a descrevia. Em seguida, em posse desses coeficientes, foi declarado um array com esse valores e na hora de realizar a medição dos resistores, ao invés de retornar o valor médio medido, é feita uma comparação do valor obtido com a curva de calibração, por meio da utilização da função `calibration_poly` e, por fim, é feita a correção do valor medido.
@@ -29,5 +30,6 @@ Nesse projeto, é possível realizar a mudança do tipo de resistor que está se
 - Valor medido em tempo real;
 - Valor comercial mais próximo;
 - Cor de cada uma das faixas que compõe o resistor.
+![página web](docs/web.png)
 ## Conexão Feita Para Realizar Leitura
 Abaixo segue uma imagem que mostra a conexão feita para realizar a leitura da resistência do resistor desconhecido.
