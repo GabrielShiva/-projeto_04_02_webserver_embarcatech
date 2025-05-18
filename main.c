@@ -16,8 +16,8 @@
 #include "lwip/netif.h"          // Lightweight IP stack - fornece funções e estruturas para trabalhar com interfaces de rede (netif)
 
 // Credenciais WIFI - Tome cuidado se publicar no github!
-const char* WIFI_SSID = "JR TELECOM-LAR";
-const char* WIFI_PASSWORD = "Rama2000";
+const char* WIFI_SSID = "XXX";
+const char* WIFI_PASSWORD = "XXX";
 
 // Definição dos pinos dos LEDs
 #define LED_PIN CYW43_WL_GPIO_LED_PIN   // GPIO do CI CYW43
@@ -34,7 +34,7 @@ const char* WIFI_PASSWORD = "Rama2000";
 #define SSD1306_ADDRESS 0x3C
 
 // Inicialização de variáveis
-int reference_resistor = 470; // Resistência conhecida
+float reference_resistor = 470.0f; // Resistência conhecida
 float unknown_resistor = 0.0f;
 float closest_comercial_resistor = 0.0f;
 volatile bool is_four_bands_mode = true;
@@ -45,6 +45,19 @@ const uint32_t debounce_delay_ms = 260;
 
 // Inicializa instância do display
 ssd1306_t ssd;
+
+#define DEG 4 // grau do polinômio
+const float calib_coef[DEG+1] = { // coeficientes do polinômio
+    74640.0f,
+   117120.0f,
+    34500.0f,
+     7310.0f,
+    14200.0f
+};
+
+// valores obtidos no matlab para o polinomio de calibração
+const float mu1 = 1.8300e4f;
+const float mu2 = 2.1624e4f;
 
 // Definição de tabela para valores dos resistores da série e24
 const float e24_resistor_values[24] = {
@@ -112,6 +125,9 @@ static err_t tcp_server_accept(void *arg, struct tcp_pcb *newpcb, err_t err);
 // Função de callback para processar requisições HTTP
 static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err);
 
+// função que realiza a calibração do valor medido
+float calibration_poly(const float *a, int deg, float x);
+
 // Leitura da temperatura interna
 float resistor_measure(void);
 
@@ -123,9 +139,6 @@ float get_closest_e96_resistor(float resistor_value);
 
 // Obtenção das cores de cada uma das bandas do resistor (4 bandas) -> 5 bandas ainda será implementado
 void get_band_color(float *resistor_value);
-
-// Tratamento do request do usuário
-void user_request(char **request);
 
 // Inicialização do protocolo I2C para comunicação com o display OLED
 void i2c_setup(uint baud_in_kilo);
@@ -147,13 +160,13 @@ int main() {
   gpio_set_irq_enabled_with_callback(BTN_B_PIN, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
   // [FIM] modo BOOTSEL associado ao botão B (apenas para desenvolvedores)
 
-  //Inicializa todos os tipos de bibliotecas stdio padrão presentes que estão ligados ao binário.
-  stdio_init_all();
-
   gpio_init(BTN_A_PIN);
   gpio_set_dir(BTN_A_PIN, GPIO_IN);
   gpio_pull_up(BTN_A_PIN);
   gpio_set_irq_enabled(BTN_A_PIN, GPIO_IRQ_EDGE_FALL, true);
+
+  //Inicializa todos os tipos de bibliotecas stdio padrão presentes que estão ligados ao binário.
+  stdio_init_all();
 
   // Inicialização do protocolo I2C com 400Khz e inicialização do display
   i2c_setup(400);
@@ -172,7 +185,7 @@ int main() {
   ssd1306_draw_string(&ssd, "Wi-Fi...", 5, 30);
   ssd1306_send_data(&ssd);
 
-  sleep_ms(2000);
+  sleep_ms(1000);
 
   //Inicializa a arquitetura do cyw43
   while (cyw43_arch_init()) {
@@ -209,7 +222,7 @@ int main() {
       return -1;
   }
 
-  sleep_ms(2000);
+  sleep_ms(1000);
 
   printf("Conectado ao Wi-Fi!\n");
   ssd1306_fill(&ssd, !color);
@@ -222,14 +235,14 @@ int main() {
       printf("IP do dispositivo: %s\n", ipaddr_ntoa(&netif_default->ip_addr));
   }
 
-  sleep_ms(2000);
+  sleep_ms(1000);
 
   ssd1306_fill(&ssd, !color);
   ssd1306_draw_string(&ssd, "Criando", 5, 20);
   ssd1306_draw_string(&ssd, "servidor...", 5, 30);
   ssd1306_send_data(&ssd);
 
-  sleep_ms(2000);
+  sleep_ms(1000);
 
   // Configura o servidor TCP - cria novos PCBs TCP. É o primeiro passo para estabelecer uma conexão TCP.
   struct tcp_pcb *server = tcp_new();
@@ -263,14 +276,17 @@ int main() {
   ssd1306_draw_string(&ssd, "com sucesso", 5, 30);
   ssd1306_send_data(&ssd);
 
-  sleep_ms(3000);
+  sleep_ms(1000);
 
   ssd1306_fill(&ssd, !color);
   ssd1306_send_data(&ssd);
 
   while (true) {
     // Cálculo da resistencia em ohms e obtenção do valor comercial mais próximo
-    unknown_resistor = resistor_measure();
+    float measured_val = resistor_measure(); // valor médio obtido do ADC
+    float x_norm = (measured_val - mu1) / mu2; // Centraliza e escala o valor medido
+    unknown_resistor = calibration_poly(calib_coef, DEG, x_norm);  // valor corrigido pela curva de quarto grau
+    printf("RAW: %.2f CAL: %.2f\n", measured_val, unknown_resistor);
     closest_comercial_resistor = is_four_bands_mode ? get_closest_e24_resistor(unknown_resistor) : get_closest_e96_resistor(unknown_resistor);
 
     get_band_color(&closest_comercial_resistor);
@@ -364,50 +380,6 @@ void draw_display_layout(ssd1306_t *ssd_ptr) {
   ssd1306_line(ssd_ptr, 20, 4, 24, 4, 1);
   ssd1306_line(ssd_ptr, 20, 12, 24, 12, 1);
   ssd1306_line(ssd_ptr, 25, 5, 25, 11, 1);
-
-  // // seta para a tolerancia
-  // ssd1306_line(ssd_ptr, 21, 15, 21, 23, 1);
-  // ssd1306_line(ssd_ptr, 22, 15, 22, 23, 1);
-
-  // ssd1306_line(ssd_ptr, 22, 22, 50, 22, 1);
-  // ssd1306_line(ssd_ptr, 22, 23, 50, 23, 1);
-
-  // ssd1306_line(ssd_ptr, 50, 20, 50, 25, 1);
-  // ssd1306_line(ssd_ptr, 51, 21, 51, 24, 1);
-  // ssd1306_line(ssd_ptr, 52, 22, 52, 23, 1);
-
-  // // seta para o multiplicador
-  // ssd1306_line(ssd_ptr, 17, 15, 17, 35, 1);
-  // ssd1306_line(ssd_ptr, 18, 15, 18, 35, 1);
-
-  // ssd1306_line(ssd_ptr, 18, 34, 50, 34, 1);
-  // ssd1306_line(ssd_ptr, 18, 35, 50, 35, 1);
-
-  // ssd1306_line(ssd_ptr, 50, 32, 50, 37, 1);
-  // ssd1306_line(ssd_ptr, 51, 33, 51, 36, 1);
-  // ssd1306_line(ssd_ptr, 52, 34, 52, 35, 1);
-
-  // // seta para a segunda faixa
-  // ssd1306_line(ssd_ptr, 13, 15, 13, 47, 1);
-  // ssd1306_line(ssd_ptr, 14, 15, 14, 47, 1);
-
-  // ssd1306_line(ssd_ptr, 14, 46, 50, 46, 1);
-  // ssd1306_line(ssd_ptr, 14, 47, 50, 47, 1);
-
-  // ssd1306_line(ssd_ptr, 50, 44, 50, 49, 1);
-  // ssd1306_line(ssd_ptr, 51, 45, 51, 48, 1);
-  // ssd1306_line(ssd_ptr, 52, 46, 52, 47, 1);
-
-  // // seta para a primeira faixa
-  // ssd1306_line(ssd_ptr, 8, 15, 8, 57, 1);
-  // ssd1306_line(ssd_ptr, 9, 15, 9, 57, 1);
-
-  // ssd1306_line(ssd_ptr, 9, 56, 50, 56, 1);
-  // ssd1306_line(ssd_ptr, 9, 57, 50, 57, 1);
-
-  // ssd1306_line(ssd_ptr, 50, 54, 50, 59, 1);
-  // ssd1306_line(ssd_ptr, 51, 55, 51, 58, 1);
-  // ssd1306_line(ssd_ptr, 52, 56, 52, 57, 1);
 }
 
 void gpio_irq_handler(uint gpio, uint32_t events) {
@@ -418,17 +390,26 @@ void gpio_irq_handler(uint gpio, uint32_t events) {
     last_time_btn_press = current_time;
 
     if (gpio == BTN_A_PIN) {
-      is_four_bands_mode = !is_four_bands_mode;
+        is_four_bands_mode = !is_four_bands_mode;
 
-      if (is_four_bands_mode) {
-        printf("modo: 4 faixas.\n");
-      } else {
-        printf("modo: 5 faixas.\n");
-      }
+        if (is_four_bands_mode) {
+            printf("MODO: 4 bandas\n");
+        } else {
+            printf("MODO: 5 BANDAS\n");
+        }
     } else if (gpio == BTN_B_PIN) {
       reset_usb_boot(0, 0);
     }
   }
+}
+
+// Avalia p(x) = a4*x^4 + a3*x^3 + a2*x^2 + a1*x + a0
+float calibration_poly(const float *a, int deg, float x) {
+    float y = a[0];
+    for (int i = 1; i <= deg; i++) {
+        y = y * x + a[i];
+    }
+    return y;
 }
 
 float resistor_measure(void) {
@@ -438,15 +419,15 @@ float resistor_measure(void) {
     // Obtenção de várias leituras seguidas e média
     float cumulative_adc_measure = 0.0f;
 
-    for (int i = 0; i < 100; i++) {
+    for (int i = 0; i < 400; i++) {
       cumulative_adc_measure += adc_read();
-      sleep_us(10);
+      sleep_ms(1);
     }
 
-    float average_adc_measures = cumulative_adc_measure / 100.0f;
+    float average_adc_measures = cumulative_adc_measure / 400.0f;
 
     // Cálculo da resistencia em ohms e obtenção do valor comercial mais próximo
-    return (reference_resistor * average_adc_measures) / (4095 - average_adc_measures);
+    return (reference_resistor * average_adc_measures) / (4095.0f - average_adc_measures);
 }
 
 float get_closest_e24_resistor(float resistor_value) {
@@ -466,6 +447,7 @@ float get_closest_e24_resistor(float resistor_value) {
   float closest_resistor = e24_resistor_values[0];
   float min_diff = fabs(normalized_resistor - e24_resistor_values[0]);
 
+  // verifica qual o resistor da série e24 é o mais próximo do valor medido
   for (int i = 0; i < 24; i++) {
     float curr_diff = fabs(normalized_resistor - e24_resistor_values[i]);
 
@@ -478,6 +460,7 @@ float get_closest_e24_resistor(float resistor_value) {
   return closest_resistor * powf(10.0, exponent);
 }
 
+// retorna o resistor de 5 faixas comercial mais próximo
 float get_closest_e96_resistor(float resistor_value) {
   if (resistor_value <= 0) {
      return 0.0;
@@ -495,6 +478,7 @@ float get_closest_e96_resistor(float resistor_value) {
   float closest_resistor = e96_resistor_values[0];
   float min_diff = fabs(normalized_resistor - e96_resistor_values[0]);
 
+   // verifica qual o resistor da série e96 é o mais próximo do valor medido
   for (int i = 0; i < 96; i++) {
     float curr_diff = fabs(normalized_resistor - e96_resistor_values[i]);
 
@@ -507,6 +491,7 @@ float get_closest_e96_resistor(float resistor_value) {
   return closest_resistor * powf(10.0, exponent);
 }
 
+// Define o buffer com as cores de cada faixa
 void get_band_color(float *resistor_value) {
   // Cálculo das cores de cada banda do resistor (4 bandas)
   float normalized_resistor = *resistor_value;
@@ -539,15 +524,6 @@ static err_t tcp_server_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
     return ERR_OK;
 }
 
-// Tratamento do request do usuário - digite aqui
-void user_request(char **request) {
-    if (strstr(*request, "GET /four_bands") != NULL) {
-        is_four_bands_mode = true;
-    } else if (strstr(*request, "GET /five_bands") != NULL) {
-        is_four_bands_mode = false;
-    }
-}
-
 static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
     if (!p) {
         tcp_close(tpcb);
@@ -563,14 +539,11 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
     printf("REQUEST: %s\n", request);
 
     // Se existir uma requisição para o endpoint /data executa o bloco de código abaixo
-    if (strstr(request, "GET /data") != NULL) {
+    if (strstr(request, "GET /toggle") != NULL) {
         // Ajusta o modo de leitura (4 bandas/ 5 bandas) conforme query string
-        if (strstr(request, "mode=five") != NULL) {
-            printf("CINCO\n");
-            is_four_bands_mode = false;
-        } else {
-            printf("QUATRO\n");
-            is_four_bands_mode = true;
+        if (strstr(request, "change=yes") != NULL) {
+            printf("Mudando modo pelo browser.\n");
+            is_four_bands_mode = !is_four_bands_mode;
         }
 
         // Monta o corpo da resposta
@@ -579,12 +552,12 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
 
         if (is_four_bands_mode) {
             body_len = snprintf(json, sizeof(json),
-                "<p>Num de faixas: 4</p>"
+                "<p>Nº de Faixas: 4</p>"
                 "<p>Medido: %.0f &#8486;</p>"
                 "<p>Comercial: %.0f &#8486;</p>"
                 "<h3>Cores das Faixas</h3>"
-                "<p>1 Faixa: %s</p>"
-                "<p>2 Faixa: %s</p>"
+                "<p>1ª Faixa: %s</p>"
+                "<p>2ª Faixa: %s</p>"
                 "<p>Mult.: %s</p>"
                 "<p>Tole.: Au (5%%)</p>",
                 unknown_resistor,
@@ -595,15 +568,15 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
             );
         } else {
             body_len = snprintf(json, sizeof(json),
-                "<p>Num de faixas: 5</p>"
+                "<p>Nº de Faixas: 5</p>"
                 "<p>Medido: %.0f &#8486;</p>"
                 "<p>Comercial: %.0f &#8486;</p>"
                 "<h3>Cores das Faixas</h3>"
-                "<p>1 Faixa: %s</p>"
-                "<p>2 Faixa: %s</p>"
-                "<p>3 Faixa: %s</p>"
+                "<p>1ª Faixa: %s</p>"
+                "<p>2ª Faixa: %s</p>"
+                "<p>3ª Faixa: %s</p>"
                 "<p>Mult.: %s</p>"
-                "<p>Tole.: Au (5%%)</p>",
+                "<p>Tole.: marrom (1%%)</p>",
             unknown_resistor,
             closest_comercial_resistor,
             resistor_band_colors[0],
@@ -640,38 +613,34 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
     tcp_write(tpcb, page_header, strlen(page_header), TCP_WRITE_FLAG_COPY);
     tcp_output(tpcb);
 
-    // Monta o corpo com botões e script
+    // Monta o corpo da página
     char body[1024];
     if (is_four_bands_mode) {
         snprintf(body, sizeof(body),
-            "<button onclick=\"setMode('four')\">4 bandas</button>"
-            "<button onclick=\"setMode('five')\">5 bandas</button>"
+            "<button onclick=\"setMode('yes')\">Mudar Nº de Faixas</button>"
             "<div id='cont'>"
-            "<p>Num de faixas: 4</p>"
+            "<p>Nº de Faixas: 4</p>"
             "<p>Medido: %.0f &#8486;</p>"
             "<p>Comercial: %.0f &#8486;</p>"
             "<h3>Cores das Faixas</h3>"
-            "<p>1 Faixa: %s</p>"
-            "<p>2 Faixa: %s</p>"
+            "<p>1ª Faixa: %s</p>"
+            "<p>2ª Faixa: %s</p>"
             "<p>Mult.: %s</p>"
             "<p>Tole.: Au (5%%)</p>"
             "</div>"
             "<script>"
-            "let mode = 'four';"
             "function setMode(m) {"
-            "  mode = m;"
-            "  fetchData();"
+            "  fetchData(m);"
             "}"
-            "function fetchData() {"
-            "  fetch('/data?mode=' + mode)"
-            "    .then(function(res) { return res.text(); })"
-            "    .then(function(txt) {"
+            "function fetchData(m) {"
+            "  fetch('/toggle?change='+m)"
+            "    .then(res => res.text())"
+            "    .then(txt => {"
             "      document.getElementById('cont').innerHTML = txt;"
             "    })"
-            "    .catch(function(err) { console.error(err); });"
-            "}"
+            "    .catch(function(err) { console.error(err); });}"
             "  setInterval(function(){"
-            "    window.location.reload();"
+            "    fetchData('no');"
             "  }, 2000);"
             "</script>",
                 unknown_resistor,
@@ -681,35 +650,31 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
                 resistor_band_colors[3]);
     } else {
         snprintf(body, sizeof(body),
-            "<button onclick=\"setMode('four')\">4 bandas</button>"
-            "<button onclick=\"setMode('five')\">5 bandas</button>"
+            "<button onclick=\"setMode('yes')\">Mudar Nº de Faixas</button>"
             "<div id='cont'>"
-            "<p>Num de faixas: 5</p>"
+            "<p>Nº de Faixas: 5</p>"
             "<p>Medido: %.0f &#8486;</p>"
             "<p>Comercial: %.0f &#8486;</p>"
             "<h3>Cores das Faixas</h3>"
-            "<p>1 Faixa: %s</p>"
-            "<p>2 Faixa: %s</p>"
-            "<p>3 Faixa: %s</p>"
+            "<p>1ª Faixa: %s</p>"
+            "<p>2ª Faixa: %s</p>"
+            "<p>3ª Faixa: %s</p>"
             "<p>Mult.: %s</p>"
-            "<p>Tole.: Au (5%%)</p>"
+            "<p>Tole.: marrom (1%%)</p>"
             "</div>"
             "<script>"
-            "let mode = 'five';"
             "function setMode(m) {"
-            "  mode = m;"
-            "  fetchData();"
+            "  fetchData(m);"
             "}"
-            "function fetchData() {"
-            "  fetch('/data?mode=' + mode)"
-            "    .then(function(res) { return res.text(); })"
-            "    .then(function(txt) {"
+            "function fetchData(m) {"
+            "  fetch('/toggle?change='+m)"
+            "    .then(res => res.text())"
+            "    .then(txt => {"
             "      document.getElementById('cont').innerHTML = txt;"
             "    })"
-            "    .catch(function(err) { console.error(err); });"
-            "}"
+            "    .catch(function(err) { console.error(err); });}"
             "  setInterval(function(){"
-            "    fetchData();"
+            "    fetchData('no');"
             "  }, 2000);"
             "</script>",
                 unknown_resistor,
@@ -731,3 +696,4 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
     pbuf_free(p);
     return ERR_OK;
 }
+
